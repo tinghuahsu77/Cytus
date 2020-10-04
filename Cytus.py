@@ -12,16 +12,18 @@ import string
 import copy
 import os
 import random
+
 #documentation from: https://aubio.org/
 import aubio
 from aubio import source, tempo, onset, notes
 #documentation from: https://numpy.org/doc/
 from numpy import median, diff
 #documentation from: https://realpython.com/intro-to-python-threading/
-import threading
 import sys
 #only mixer feature of pygame used: https://www.pygame.org/docs/ref/music.html
 import pygame
+#seperate file
+# https://github.com/aubio/aubio/blob/master/python/demos/demo_tempo.py
 
 #circles representing onsets in audio
 class NoteType(object):
@@ -47,12 +49,6 @@ class tapNote(NoteType):
     def __init__(self,onset,x,y,r,color):
         super().__init__(onset,x,y,r,color)
 
-class holdNote(NoteType):
-    def __init__(self,onset,x,y,r,color,holdL):
-        super().__init__(onset,x,y,r,color)
-        #length of bar (corresponds to time note is held for)
-        self.holdL=holdL
-
 #buttons for user options
 class Button(object):
     def __init__(self,label,topLeft,botRight,color):
@@ -64,7 +60,6 @@ class Button(object):
 
 class GameMode(Mode):
     def appStarted(mode):
-        beats,totalFrames,lenBeats=mode.getTempo()
         
         if(mode.app.pickedSong=='chemicalStar.wav'):
             #img from https://i.ytimg.com/vi/sRuFHOFa0_c/maxresdefault.jpg
@@ -103,31 +98,19 @@ class GameMode(Mode):
         mode.numXBlocks=mode.width//mode.blockWidth
         mode.numYBlocks=mode.height//mode.blockHeight
 
-        mode.comboFont=50
-        mode.comboCount=0
+        mode.comboFont=30
         mode.comboShow=False
         mode.comboClock=0
-
+        mode.comboCount=0
+        
         mode.beatClock=0
         mode.countDown=31
         mode.cdSize=55
-
-        #mode.beatTimes=mode.getBeatTimes(mode.fileName)
-        #mode.durations=mode.getBeatDuration(mode.beatTimes)
-        # for beatNum in mode.durations:
-        #     #print(mode.durations[beatNum])
-        #     if(mode.durations[beatNum]>.3):
-        #         mode.makeHoldNote=True
-        #         mode.makeTapNote=False
-        #     else:
-        #         mode.makeTapNote=True
-        #         mode.makeHoldNote=False
 
         #from: https://www.pygame.org/docs/ref/music.html
         pygame.init()
         pygame.mixer.init()
         pygame.mixer.music.load(mode.app.fileName)
-        #pygame.mixer.music.load('short.wav')
 
         mode.tapNotes=[]
         mode.holdNotes=[]
@@ -144,18 +127,84 @@ class GameMode(Mode):
         for onset in mode.onsets:  
             rate=48000
             mode.onsetsCopy.append(onset//rate)
-        #mode.pitches=mode.detect(mode.fileName)
 
-        #how many notes user has cleared
-        mode.percent = round(mode.app.progress/mode.app.numOnsets, 2)
+    
+    def redrawAll(mode,canvas):
+        canvas.create_image(mode.width/2,mode.height/2, \
+            image=ImageTk.PhotoImage(mode.background))
+
+        #draw 3 sec countdown before game starts
+        if(mode.cdSize>0):
+            cDown=''
+            if(mode.countDown%10==0 and mode.countDown>0):
+                cDown=mode.countDown//10
+                mode.cdSize=50
+            canvas.create_text(mode.width/2,mode.height/2,text=str(cDown),
+                font=f'Arial {int(mode.cdSize)}',fill='red')
+            mode.cdSize-=1
+
+        canvas.create_text(200,20,text='Press p to pause, q to manual quit', \
+            font='Helvetica 14',fill='black',anchor='c')
+
+        #show progress through the song
+        percent = round(mode.app.progress/mode.app.numOnsets*100, 2)
+        canvas.create_text(700,20,text=f'Progress:{percent}', \
+            font='Helvetica 14',fill='black',anchor='c')
+
+        for holdNote in mode.holdNotes:
+            canvas.create_oval(holdNote.x-holdNote.r,holdNote.y-holdNote.r,
+                    holdNote.x+holdNote.r,holdNote.y+holdNote.r,fill=holdNote.color,outline=holdNote.color)
+            canvas.create_rectangle(holdNote.x-holdNote.r,holdNote.y,holdNote.x+holdNote.r,
+                holdNote.y+holdNote.holdL,fill=holdNote.color,outline=holdNote.color)
         
-        
+        if(mode.countDown<=0):
+            #draw tapNotes
+            for tapNotes in mode.tapNotes:
+                #make note shrink as bar leaves it 
+                if(mode.barLeavingNote(tapNotes)==True ):
+                    if(tapNotes.r>1 and tapNotes.shrink==True):
+                        tapNotes.r-=3
+                        canvas.create_oval(tapNotes.x-tapNotes.r,tapNotes.y-tapNotes.r,
+                            tapNotes.x+tapNotes.r,tapNotes.y+tapNotes.r,fill=tapNotes.color)
+                else:
+                    canvas.create_oval(tapNotes.x-tapNotes.r,tapNotes.y-tapNotes.r,
+                        tapNotes.x+tapNotes.r,tapNotes.y+tapNotes.r,fill=tapNotes.color)
+                    tapNotes.drawn=True
+
+                #draw accuracy word
+                if(tapNotes.popUpClock<500):
+                    if(tapNotes.Fsize>0):
+                        #make words shrink 
+
+                        #make words white for retrospective background
+                        if(mode.app.pickedSong=='retrospective.wav'):
+                            canvas.create_text(tapNotes.x,tapNotes.y,text=tapNotes.accuracy,anchor='c',
+                                    font=f'Arial {tapNotes.Fsize}',fill='white')
+                        else:
+                            canvas.create_text(tapNotes.x,tapNotes.y,text=tapNotes.accuracy,anchor='c',
+                                    font=f'Arial {tapNotes.Fsize}',fill='black')
+                        tapNotes.Fsize-=1
+                else:
+                    tapNotes.popUpClockStart=False
+                
+                #combo word pop up every 10 increase in combo
+                if(mode.comboCount%10==0 and mode.comboCount>0 and \
+                    mode.comboClock<500):
+                    canvas.create_text(mode.width/2,mode.height/2, \
+                    text=f'COMBO: {mode.comboCount}', \
+                    font=f'Arial {mode.comboFont}',fill='red')
+                
+                
+            #sweep bar
+            canvas.create_rectangle(mode.margin-10,mode.barY,mode.width-mode.margin+10,mode.barY+mode.barThk,
+                fill='black',outline='gold')
     #from: tempo module 
     # https://github.com/aubio/aubio/blob/master/python/demos/demo_tempo.py
-    def getTempo(mode):
+    #documentation from: https://aubio.org/
+
+    def getTempo(mode,filename):
         win_s = 512                 # fft size
         hop_s = win_s // 2          # hop size
-        filename = mode.app.fileName
 
         samplerate = 48000
 
@@ -184,69 +233,6 @@ class GameMode(Mode):
 
         return(beats, total_frames, len(beats))
 
-    def redrawAll(mode,canvas):
-        canvas.create_image(mode.width/2,mode.height/2, \
-            image=ImageTk.PhotoImage(mode.background))
-
-        #draw 3 sec countdown before game starts
-        if(mode.cdSize>0):
-            cDown=''
-            if(mode.countDown%10==0 and mode.countDown>0):
-                cDown=mode.countDown//10
-                mode.cdSize=50
-            canvas.create_text(mode.width/2,mode.height/2,text=str(cDown),
-                font=f'Arial {int(mode.cdSize)}',fill='red')
-            mode.cdSize-=1
-
-        canvas.create_text(200,20,text='Press p to pause, q to manual quit', \
-            font='Helvetica 14',fill='black',anchor='c')
-        canvas.create_text(700,20,text=f'Progress:{mode.percent}%', \
-            font='Helvetica 14',fill='black',anchor='c')
-
-        for holdNote in mode.holdNotes:
-            canvas.create_oval(holdNote.x-holdNote.r,holdNote.y-holdNote.r,
-                    holdNote.x+holdNote.r,holdNote.y+holdNote.r,fill=holdNote.color,outline=holdNote.color)
-            canvas.create_rectangle(holdNote.x-holdNote.r,holdNote.y,holdNote.x+holdNote.r,
-                holdNote.y+holdNote.holdL,fill=holdNote.color,outline=holdNote.color)
-        
-        if(mode.countDown<=0):
-            #draw tapNotes
-            for tapNotes in mode.tapNotes:
-                #make note shrink as bar leaves it 
-                if(mode.barLeavingNote(tapNotes)==True ):
-                    if(tapNotes.r>1 and tapNotes.shrink==True):
-                        tapNotes.r-=3
-                        canvas.create_oval(tapNotes.x-tapNotes.r,tapNotes.y-tapNotes.r,
-                            tapNotes.x+tapNotes.r,tapNotes.y+tapNotes.r,fill=tapNotes.color)
-                else:
-                    canvas.create_oval(tapNotes.x-tapNotes.r,tapNotes.y-tapNotes.r,
-                        tapNotes.x+tapNotes.r,tapNotes.y+tapNotes.r,fill=tapNotes.color)
-                    tapNotes.drawn=True
-
-                #draw accuracy word
-                if(tapNotes.popUpClock<500):
-                    if(tapNotes.Fsize>0):
-                        #make word shrink 
-                        canvas.create_text(tapNotes.x,tapNotes.y,text=tapNotes.accuracy,anchor='c',
-                                font=f'Arial {tapNotes.Fsize}')
-                        tapNotes.Fsize-=1
-                else:
-                    tapNotes.popUpClockStart=False
-                
-                #combo word pop up every 5 increase in combo
-                if(mode.comboCount%5==0 and mode.comboCount>0 and \
-                    mode.comboClock<500):
-                    canvas.create_text(mode.width/2,mode.height/2, \
-                    text=f'COMBO: {mode.comboCount}', \
-                    font=f'Arial {mode.comboFont}',fill='red')
-                
-                
-            #sweep bar
-            canvas.create_rectangle(mode.margin-10,mode.barY,mode.width-mode.margin+10,mode.barY+mode.barThk,
-                fill='black',outline='gold')
-      
-            
-            
     #modified from: https://github.com/aubio/aubio/blob/master/python/demos/
     # demo_onset.py
     def getOnsets(mode,filename):
@@ -269,12 +255,11 @@ class GameMode(Mode):
             
             samples, read = s()
             if o(samples):
-                #print("%f" % o.get_last_s())
                 onsets.append(o.get_last())
             total_frames += read
             if read < hop_s: break
         return (onsets)
-
+    
 
     #returns block number 
     def getBlockNum(mode,coord,size):
@@ -303,7 +288,7 @@ class GameMode(Mode):
         for onset in mode.onsets:  
             onset//=48
             if(mode.app.chosenMode=='MouseClick'):
-                offset=400
+                offset=900
             elif(mode.app.chosenMode=='Keyboard'):
                 offset=900
             if(onset%offset == mode.clock):  
@@ -415,6 +400,7 @@ class GameMode(Mode):
                     #reset combocount to zero when a note is missed
                     mode.comboCount=0
                     mode.app.missed+=1
+                    mode.app.progress+=1
             
             if(mode.beatClock in mode.onsetsCopy): 
                 mode.showBeat=True
@@ -551,8 +537,8 @@ class ModeSelectionMode(Mode):
         mode.kbModeButton = Button("Keyboard Mode",(mode.width/4-x,mode.height/2+y),
             (mode.width/4+x,mode.height*3/4+y2),'blue')
         mode.buttons.add(mode.kbModeButton)
-        mode.mouseModeButton = Button("Mouse Click Mode",(mode.width*3/4-x,mode.height/2+y),
-            (mode.width*3/4+x,mode.height*3/4+y2),'blue')
+        mode.mouseModeButton = Button("Mouse Click Mode",(mode.width*3/4-x, 
+            mode.height/2+y),(mode.width*3/4+x,mode.height*3/4+y2),'blue')
         mode.buttons.add(mode.mouseModeButton)
         mode.app.chosenMode=None
 
@@ -580,13 +566,18 @@ class ModeSelectionMode(Mode):
 
         #descriptions for each mode
         off=27
-        canvas.create_rectangle(0,button.botRight[1]+off,mode.width,mode.height,fill='white')
+        canvas.create_rectangle(0,button.botRight[1]+off,mode.width,mode.height,
+            fill='white')
         if(mode.app.chosenMode=='Keyboard'):
-            canvas.create_text(mode.width/2,button.botRight[1]+off*2,anchor='c',text='Keyboard Mode:\
-            \nPress space bar to clear notes when sweep bar passes over.',font='Takoma 16',fill='blue')
+            canvas.create_text(mode.width/2,button.botRight[1]+off*2,anchor='c',
+                text='Keyboard Mode:\
+            \nPress space bar to clear notes when sweep bar passes over.',
+                font='Takoma 16',fill='blue')
         elif(mode.app.chosenMode=='MouseClick'):
-            canvas.create_text(mode.width/2,button.botRight[1]+off*2,anchor='c',text='Mouse Click Mode:\
-            \nUse mouse to click on notes to clear when sweep bar passes over.',font='Takoma 16',fill='blue')
+            canvas.create_text(mode.width/2,button.botRight[1]+off*2,anchor='c',
+                text='Mouse Click Mode:\
+            \nUse mouse to click on notes to clear when sweep bar passes over.',
+                font='Takoma 16',fill='blue')
     
 
 
@@ -594,7 +585,8 @@ class ModeSelectionMode(Mode):
     def mouseMoved(mode,event):
         for button in mode.buttons:
             if(not button.label == None):
-                if(mode.app.inBounds((event.x,event.y),button.topLeft,button.botRight)):
+                if(mode.app.inBounds((event.x,event.y),button.topLeft,
+                    button.botRight)):
                     button.outline='gold'
                     if(button.label=='Keyboard Mode'):
                         mode.app.chosenMode='Keyboard'
@@ -611,7 +603,8 @@ class ModeSelectionMode(Mode):
         #check which button user clicked, switch to mode of gameplay accordingly
         for button in mode.buttons:
             if(not button.label == None):
-                if(mode.app.inBounds((event.x,event.y),button.topLeft,button.botRight)):
+                if(mode.app.inBounds((event.x,event.y),button.topLeft,
+                    button.botRight)):
                     pygame.mixer.music.stop()
                     if(button.label=='Keyboard Mode'):
                         mode.app.setActiveMode(mode.app.keyboardMode)
@@ -630,7 +623,8 @@ class WelcomeMode(Mode):
         pygame.mixer.music.load('opening.wav')
         pygame.mixer.music.play()
         #from: https://www.androidpolice.com/2018/03/08/cytus-ii-30-off-first-week/
-        url='https://www.androidpolice.com/wp-content/uploads/2018/03/nexus2cee_Screenshot-26.png'
+        url='https://www.androidpolice.com/wp-content/uploads/2018/03/nexus'+\
+        '2cee_Screenshot-26.png'
         mode.bkgnd = mode.loadImage(url)
         scale=24/25
         mode.background = mode.scaleImage(mode.bkgnd, scale)
@@ -642,10 +636,13 @@ class WelcomeMode(Mode):
 
     def redrawAll(mode,canvas):
         canvas.create_rectangle(0,0,mode.width,mode.height,fill='black')
-        canvas.create_image(mode.width/2, mode.height/2, image=ImageTk.PhotoImage(mode.background))
-        canvas.create_image(mode.width/2,mode.height*3/4,image=ImageTk.PhotoImage(mode.pressKey))
+        canvas.create_image(mode.width/2, mode.height/2, 
+            image=ImageTk.PhotoImage(mode.background))
+        canvas.create_image(mode.width/2,mode.height*3/4,
+            image=ImageTk.PhotoImage(mode.pressKey))
         canvas.create_rectangle(mode.width/2-511//2,mode.height*3/4-47//2, \
-            mode.width/2+511//2,mode.height*3/4+47//2,fill='black',stipple=mode.stip)
+            mode.width/2+511//2,mode.height*3/4+47//2,fill='black',
+                stipple=mode.stip)
 
     #press any key to proceed to song pick screen
     def keyPressed(mode,event):
@@ -673,31 +670,54 @@ class songPickMode(GameMode):
     def appStarted(mode):
         
         mode.select = mode.loadImage('selectASong.png')
-        mode.files=['chemicalStar.wav','lastIllusion.wav','retrospective.wav','saika.wav']
+        mode.files=['chemicalStar.wav','lastIllusion.wav','retrospective.wav',
+            'saika.wav']
         mode.clock=0
         mode.stip=''
         #dictionary with value as filename and key as button object
         mode.songs=dict()
         mode.buttonS=150
-        mode.chemButton=Button('Chemical Star',(mode.width/2-mode.buttonS,mode.height/2-180),\
+        mode.chemButton=Button('Chemical Star',(mode.width/2-mode.buttonS,
+            mode.height/2-180),\
         (mode.width/2+mode.buttonS,mode.height/2-100),'green')
-        mode.lastButton=Button('Last Illusion',(mode.width/2-mode.buttonS,mode.height/2-80),
+        mode.lastButton=Button('Last Illusion',(mode.width/2-mode.buttonS,
+            mode.height/2-80),
         (mode.width/2+mode.buttonS,mode.height/2),'green')
-        mode.retroButton=Button('Retrospective',(mode.width/2-mode.buttonS,mode.height/2+20),
+        mode.retroButton=Button('Retrospective',(mode.width/2-mode.buttonS,
+            mode.height/2+20),
         (mode.width/2+mode.buttonS,mode.height/2+100),'green')
-        mode.saikaButton=Button('Saika',(mode.width/2-mode.buttonS,mode.height/2+120),
+        mode.saikaButton=Button('Saika',(mode.width/2-mode.buttonS,
+            mode.height/2+120),
         (mode.width/2+mode.buttonS,mode.height/2+200),'green')
         mode.songs[mode.chemButton]=mode.files[0]
         mode.songs[mode.lastButton]=mode.files[1]
         mode.songs[mode.retroButton]=mode.files[2]
         mode.songs[mode.saikaButton]=mode.files[3]
 
-    
+        #filename is key, beats in song is value
+        mode.beatsInSongs=dict()
+        for song in mode.songs:
+            # https://github.com/aubio/aubio/blob/master/python/demos/demo_tempo.py
+            beats,totalFrames,lenBeats=mode.getTempo(mode.songs[song])
+            mode.beatsInSongs[mode.songs[song]]=lenBeats
+
+        allBeats=[]
+        for beats in mode.beatsInSongs:
+            allBeats.append(beats)
+        #sort songs in order by number of beats found in song
+        allBeats.sort()
+        mode.difficulty=dict()
+        mode.difficulty[allBeats[0]]='Level 1'
+        mode.difficulty[allBeats[1]]='Level 2'
+        mode.difficulty[allBeats[2]]='Level 3'
+        mode.difficulty[allBeats[3]]='Level 4'
+
 
     def mouseMoved(mode,event):
         for song in mode.songs:
             if(not song.label == None):
-                if(mode.app.inBounds((event.x,event.y),song.topLeft,song.botRight)):
+                if(mode.app.inBounds((event.x,event.y),song.topLeft,
+                    song.botRight)):
                     song.outline='gold'
                 else:
                     song.outline=None
@@ -705,7 +725,8 @@ class songPickMode(GameMode):
     def mousePressed(mode,event):
         for song in mode.songs:
             if(not song.label == None):
-                if(mode.app.inBounds((event.x,event.y),song.topLeft,song.botRight)):
+                if(mode.app.inBounds((event.x,event.y),song.topLeft,
+                    song.botRight)):
                     mode.app.pickedSong=mode.songs[song]
                     mode.app.fileName=mode.songs[song]
                     mode.app.setActiveMode(mode.app.ModeSelectionMode)
@@ -729,9 +750,11 @@ class songPickMode(GameMode):
 
     def redrawAll(mode,canvas):
         canvas.create_rectangle(0,0,mode.width,mode.height,fill='black')
-        canvas.create_image(mode.width/2,mode.height/8,image=ImageTk.PhotoImage(mode.select))
+        canvas.create_image(mode.width/2,mode.height/8,
+            image=ImageTk.PhotoImage(mode.select))
         r,s=150,40
-        canvas.create_rectangle(0,0,mode.width,mode.height/8+50,fill='black',stipple=mode.stip)
+        canvas.create_rectangle(0,0,mode.width,mode.height/8+50,fill='black',
+            stipple=mode.stip)
         
         for song in mode.songs:
             if(song.outline == None):
@@ -739,30 +762,40 @@ class songPickMode(GameMode):
                     song.botRight[0],song.botRight[1],fill=song.color)
             else:
                 canvas.create_rectangle(song.topLeft[0],song.topLeft[1],
-                    song.botRight[0],song.botRight[1],fill=song.color,outline=song.outline,width=4)
-            canvas.create_text(song.topLeft[0]+r,song.topLeft[1]+s,text=song.label,font='Arial 20')
+                    song.botRight[0],song.botRight[1],fill=song.color,
+                        outline=song.outline,width=4)
+            canvas.create_text(song.topLeft[0]+r,song.topLeft[1]+s,
+                text=song.label,font='Arial 20')
+            canvas.create_text(song.topLeft[0]+r,song.topLeft[1]+s+20,
+                text=mode.difficulty[mode.songs[song]],font='Arial 12')
 
 class ResultsScreenMode(GameMode):
     def appStarted(mode):
         super().appStarted()
-        #image from: http://the-app-shack.com/wp-content/uploads/2012/08/Cytus-New-02.jpg
+        #image from: http://the-app-shack.com/wp-content/uploads/2012/08/
+        # Cytus-New-02.jpg
         mode.bkg=mode.loadImage('results.jpg')
         pygame.mixer.music.stop()
         mode.score=(mode.app.perfects+mode.app.greats+mode.app.goods)/mode.app.numOnsets
-        mode.restart=Button('Restart',(mode.width/8-50,mode.height/6-50),(mode.width/8+50,mode.height/8+50),'black')
+
+        mode.restart=Button('Restart',(mode.width/8-50,mode.height/6-50),
+            (mode.width/8+50,mode.height/8+50),'black')
     
     #restart game
     def mousePressed(mode,event):
-        if(mode.app.inBounds((event.x,event.y),mode.restart.topLeft,mode.restart.botRight)):
+        if(mode.app.inBounds((event.x,event.y),mode.restart.topLeft,
+            mode.restart.botRight)):
             mode.app.appStarted()
             
     def redrawAll(mode,canvas):
-        canvas.create_image(mode.width/2,mode.height/2,image=ImageTk.PhotoImage(mode.bkg))
+        canvas.create_image(mode.width/2,mode.height/2,
+            image=ImageTk.PhotoImage(mode.bkg))
         canvas.create_text(mode.width/2,mode.height/10,
             text='Results:',font='Helvetica 30 bold italic',fill='white')
         canvas.create_text(mode.width/2,mode.height/6,
-            text=f'{round(mode.score*100,2)}%',font='Helvetica 30 bold italic',fill='white')
-
+            text=f'{round(mode.score*100,2)}',font='Helvetica 30 bold italic',
+                fill='white')
+        
         #restart button
         canvas.create_rectangle(mode.restart.topLeft[0],mode.restart.topLeft[1],
                 mode.restart.botRight[0],mode.restart.botRight[1],width=4)
@@ -773,13 +806,17 @@ class ResultsScreenMode(GameMode):
         x=mode.width/5
         y=mode.height*3/4
         canvas.create_oval(x-r,y-r,x+r,y+r,width=5)
-        canvas.create_text(x,y,text=f'Perfects:{mode.app.perfects}',font='Helvetica 16',fill='white')
+        canvas.create_text(x,y,text=f'Perfects:{mode.app.perfects}',
+            font='Helvetica 16',fill='white')
         canvas.create_oval(x*2-r,y-r,x*2+r,y+r,width=5)
-        canvas.create_text(x*2,y,text=f'Greats:{mode.app.greats}',font='Helvetica 16',fill='white')
+        canvas.create_text(x*2,y,text=f'Greats:{mode.app.greats}',
+            font='Helvetica 16',fill='white')
         canvas.create_oval(x*3-r,y-r,x*3+r,y+r,width=5)
-        canvas.create_text(x*3,y,text=f'Goods:{mode.app.goods}',font='Helvetica 16',fill='white')
+        canvas.create_text(x*3,y,text=f'Goods:{mode.app.goods}',
+            font='Helvetica 16',fill='white')
         canvas.create_oval(x*4-r,y-r,x*4+r,y+r,width=5)
-        canvas.create_text(x*4,y,text=f'Misses:{mode.app.missed}',font='Helvetica 16',fill='white')
+        canvas.create_text(x*4,y,text=f'Misses:{mode.app.missed}',
+            font='Helvetica 16',fill='white')
 
 
 class PauseMode(Mode):
